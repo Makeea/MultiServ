@@ -1,0 +1,362 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1.0">
+	<title>RTMP Server Dashboard</title>
+	<style>
+		:root {
+			--bg-dark: #181A1B;
+			--bg-light: #f8f9fa;
+			--text-dark: #f8f9fa;
+			--text-light: #212529;
+			--accent: #4ecdc4;
+			--table-bg-dark: #232526;
+			--table-bg-light: #fff;
+			--border: #353738;
+			--danger: #e74c3c;
+		}
+		body {
+			font-family: "Segoe UI", Arial, sans-serif;
+			margin: 0;
+			padding: 0;
+			background: var(--bg-dark);
+			color: var(--text-dark);
+			transition: background 0.3s, color 0.3s;
+		}
+		[data-theme="light"] {
+			background: var(--bg-light);
+			color: var(--text-light);
+		}
+		.header {
+			display: flex;
+			justify-content: space-between;
+			align-items: center;
+			padding: 16px 24px 8px 24px;
+			background: var(--table-bg-dark);
+		}
+		[data-theme="light"] .header {
+			background: var(--table-bg-light);
+		}
+		h1 {
+			margin: 0;
+			font-size: 1.5rem;
+			font-weight: bold;
+		}
+		.theme-toggle {
+			border: none;
+			background: var(--accent);
+			color: #fff;
+			padding: 6px 14px;
+			margin-left: 8px;
+			border-radius: 5px;
+			font-size: 1rem;
+			cursor: pointer;
+			transition: background 0.2s;
+		}
+		.stats-row {
+			display: flex;
+			justify-content: space-between;
+			align-items: center;
+			padding: 8px 24px;
+			font-size: 1rem;
+			background: var(--table-bg-dark);
+		}
+		[data-theme="light"] .stats-row {
+			background: var(--table-bg-light);
+		}
+		.table-wrap {
+			overflow-x: auto;
+			padding: 0 12px;
+		}
+		table {
+			width: 100%;
+			border-collapse: collapse;
+			margin: 16px 0;
+			background: var(--table-bg-dark);
+			color: var(--text-dark);
+		}
+		[data-theme="light"] table {
+			background: var(--table-bg-light);
+			color: var(--text-light);
+		}
+		th, td {
+			padding: 8px 12px;
+			border-bottom: 1px solid var(--border);
+			text-align: left;
+		}
+		th {
+			background: var(--accent);
+			color: #fff;
+			font-weight: bold;
+		}
+		tr.down {
+			background: var(--danger);
+			color: #fff;
+		}
+		.control-bar {
+			display: flex;
+			gap: 16px;
+			align-items: center;
+			padding: 8px 24px 0 24px;
+		}
+		button, .csv-btn {
+			padding: 6px 14px;
+			background: var(--accent);
+			color: #fff;
+			border: none;
+			border-radius: 4px;
+			cursor: pointer;
+			font-size: 1rem;
+			margin: 0 2px;
+			transition: background 0.2s;
+		}
+		button:active, .csv-btn:active {
+			background: #1a998b;
+		}
+		.graph-wrap {
+			display: flex;
+			gap: 32px;
+			justify-content: start;
+			align-items: flex-end;
+			margin: 20px 24px 0 24px;
+		}
+		@media (max-width: 800px) {
+			.header, .stats-row, .control-bar, .graph-wrap {
+				flex-direction: column;
+				align-items: flex-start;
+				gap: 10px;
+				padding: 8px;
+			}
+			table th, table td {
+				padding: 6px 6px;
+				font-size: 0.9rem;
+			}
+		}
+		.history {
+			max-height: 140px;
+			overflow-y: auto;
+			background: var(--table-bg-dark);
+			color: var(--text-dark);
+			margin: 18px 24px;
+			border-radius: 7px;
+			border: 1px solid var(--border);
+			padding: 12px;
+			font-size: 0.98rem;
+		}
+		[data-theme="light"] .history {
+			background: var(--table-bg-light);
+			color: var(--text-light);
+		}
+	</style>
+</head>
+<body>
+	<div class="header">
+		<h1>RTMP Server Dashboard</h1>
+		<div>
+			<button id="themeToggle" class="theme-toggle">Dark</button>
+		</div>
+	</div>
+	<div class="stats-row">
+		<div>Status: <span id="serverStatus">...</span></div>
+		<div>Clients: <span id="clients">0</span></div>
+		<div>Last refresh: <span id="lastRefresh">...</span></div>
+	</div>
+	<div class="control-bar">
+		<button id="csvBtn">Export CSV</button>
+		<button id="showHistory">Show History</button>
+		<label><input type="checkbox" id="alertsToggle" checked> Alerts</label>
+	</div>
+	<div class="table-wrap">
+		<table id="streamsTable">
+			<thead>
+				<tr>
+					<th>Stream Name</th>
+					<th>Outputs</th>
+					<th>Bitrate</th>
+					<th>Clients</th>
+					<th>Uptime</th>
+				</tr>
+			</thead>
+			<tbody>
+				<tr><td colspan="5" style="text-align:center;">Loading...</td></tr>
+			</tbody>
+		</table>
+	</div>
+	<div class="graph-wrap">
+		<canvas id="bitrateGraph" width="350" height="120"></canvas>
+		<canvas id="clientGraph" width="350" height="120"></canvas>
+	</div>
+	<div class="history" id="historyBox" style="display:none;"></div>
+
+	<script>
+	const POLL_INTERVAL = 7000;
+	let lastStreams = {};
+	let eventHistory = [];
+	let alertsEnabled = true;
+	let darkMode = true;
+
+	function setTheme(dark) {
+		darkMode = dark;
+		document.body.setAttribute('data-theme', dark ? '' : 'light');
+		document.getElementById('themeToggle').textContent = dark ? 'Light' : 'Dark';
+	}
+
+	document.getElementById('themeToggle').onclick = () => setTheme(!darkMode);
+	document.getElementById('alertsToggle').onchange = e => alertsEnabled = e.target.checked;
+	document.getElementById('showHistory').onclick = () => {
+		const box = document.getElementById('historyBox');
+		box.style.display = box.style.display === 'none' ? '' : 'none';
+	};
+
+	document.getElementById('csvBtn').onclick = () => {
+		const rows = Array.from(document.querySelectorAll('#streamsTable tr'));
+		let csv = rows.map(row =>
+			Array.from(row.children).map(td => '"' + td.textContent.replaceAll('"','""') + '"').join(',')
+		).join('\n');
+		let blob = new Blob([csv], { type: 'text/csv' });
+		let a = document.createElement('a');
+		a.href = URL.createObjectURL(blob);
+		a.download = 'streams.csv';
+		document.body.appendChild(a);
+		a.click();
+		document.body.removeChild(a);
+	};
+
+	async function fetchStats() {
+		try {
+			let res = await fetch('http://localhost:8080/stat');
+			if (!res.ok) throw new Error('Fetch failed');
+			let xml = await res.text();
+			parseStats(xml);
+		} catch (e) {
+			displayStatus('DOWN');
+			setServerStatus(false);
+		}
+	}
+
+	function parseStats(xmlStr) {
+		let parser = new DOMParser();
+		let xml = parser.parseFromString(xmlStr, 'application/xml');
+		let streams = Array.from(xml.querySelectorAll('live > stream'));
+		let tbody = document.querySelector('#streamsTable tbody');
+		tbody.innerHTML = '';
+		let totalClients = 0;
+		let up = true;
+		let currentStreams = {};
+		streams.forEach(stream => {
+			let name = stream.querySelector('name')?.textContent || '';
+			let nclients = parseInt(stream.querySelector('nclients')?.textContent || '0', 10);
+			let bw = (parseInt(stream.querySelector('bw_in')?.textContent || '0', 10) * 8 / 1000).toFixed(2) + ' kbps';
+			let outputs = Array.from(stream.querySelectorAll('publishers > publisher > app')).map(n => n.textContent).join(', ');
+			let uptime = stream.querySelector('time')?.textContent || '';
+			let tr = document.createElement('tr');
+			tr.innerHTML = `<td>${name}</td><td>${outputs}</td><td>${bw}</td><td>${nclients}</td><td>${uptime}</td>`;
+			if (nclients === 0) {
+				tr.classList.add('down');
+				up = false;
+			}
+			tbody.appendChild(tr);
+			currentStreams[name] = { nclients, bw, uptime };
+			totalClients += nclients;
+		});
+		// Detect connect/disconnect events
+		if (Object.keys(lastStreams).length) {
+			Object.keys(currentStreams).forEach(name => {
+				if (!lastStreams[name]) addEvent('Stream started', name);
+			});
+			Object.keys(lastStreams).forEach(name => {
+				if (!currentStreams[name]) addEvent('Stream stopped', name);
+			});
+		}
+		lastStreams = currentStreams;
+		displayStatus(up);
+		setServerStatus(up);
+		document.getElementById('clients').textContent = totalClients;
+		let now = new Date();
+		document.getElementById('lastRefresh').textContent = now.toLocaleTimeString();
+		updateHistoryBox();
+		updateGraphs(currentStreams);
+	}
+
+	function setServerStatus(up) {
+		document.getElementById('serverStatus').textContent = up ? 'UP' : 'DOWN';
+		document.getElementById('serverStatus').style.color = up ? 'var(--accent)' : 'var(--danger)';
+	}
+
+	function displayStatus(status) {
+		if (alertsEnabled && Notification.permission === 'granted') {
+			let msg = status === 'DOWN' ? 'RTMP server is DOWN!' : 'RTMP server is UP!';
+			new Notification('RTMP Status', { body: msg });
+		}
+	}
+
+	function addEvent(type, name) {
+		let now = new Date();
+		let entry = `${now.toLocaleTimeString()} - ${type}: ${name}`;
+		eventHistory.unshift(entry);
+		if (eventHistory.length > 20) eventHistory.pop();
+		if (alertsEnabled && Notification.permission === 'granted') {
+			new Notification(type, { body: name });
+		}
+	}
+
+	function updateHistoryBox() {
+		let box = document.getElementById('historyBox');
+		if (!box) return;
+		box.innerHTML = eventHistory.length ? eventHistory.join('<br>') : '<em>No events yet</em>';
+	}
+
+	function updateGraphs(currentStreams) {
+		// Placeholder: Draws a bar for each stream's bitrate/clients
+		let bitrateCanvas = document.getElementById('bitrateGraph');
+		let ctx = bitrateCanvas.getContext('2d');
+		ctx.clearRect(0, 0, bitrateCanvas.width, bitrateCanvas.height);
+		let names = Object.keys(currentStreams);
+		if (!names.length) return;
+		let barWidth = 40;
+		let max = Math.max(...names.map(n => parseFloat(currentStreams[n].bw)));
+		let i = 0;
+		names.forEach(name => {
+			let bw = parseFloat(currentStreams[name].bw);
+			let barHeight = Math.max(10, (bw / (max || 1)) * (bitrateCanvas.height - 20));
+			ctx.fillStyle = '#4ecdc4';
+			ctx.fillRect(i * (barWidth + 16), bitrateCanvas.height - barHeight, barWidth, barHeight);
+			ctx.fillStyle = '#fff';
+			ctx.font = '12px Arial';
+			ctx.fillText(name, i * (barWidth + 16) + 4, bitrateCanvas.height - 4);
+			i++;
+		});
+
+		let clientCanvas = document.getElementById('clientGraph');
+		let cctx = clientCanvas.getContext('2d');
+		cctx.clearRect(0, 0, clientCanvas.width, clientCanvas.height);
+		i = 0;
+		max = Math.max(...names.map(n => currentStreams[n].nclients));
+		names.forEach(name => {
+			let nclients = currentStreams[name].nclients;
+			let barHeight = Math.max(10, (nclients / (max || 1)) * (clientCanvas.height - 20));
+			cctx.fillStyle = '#4ecdc4';
+			cctx.fillRect(i * (barWidth + 16), clientCanvas.height - barHeight, barWidth, barHeight);
+			cctx.fillStyle = '#fff';
+			cctx.font = '12px Arial';
+			cctx.fillText(name, i * (barWidth + 16) + 4, clientCanvas.height - 4);
+			i++;
+		});
+	}
+
+	function requestNotify() {
+		if (Notification.permission !== 'granted') {
+			Notification.requestPermission();
+		}
+	}
+
+	window.onload = function() {
+		setTheme(true);
+		requestNotify();
+		fetchStats();
+		setInterval(fetchStats, POLL_INTERVAL);
+	};
+	</script>
+</body>
+</html>
