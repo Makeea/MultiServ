@@ -4,8 +4,11 @@
 # This script automates the installation and configuration of the MultiServ restreaming server.
 
 # --- Configuration ---
-PROJECT_DIR="/home/claire/projects/MultiServ"
-ENV_FILE="$PROJECT_DIR/.env"
+# Find the directory the script is running from
+SCRIPT_DIR=$( cd -- "$( dirname -- "${BASH_SOURCE[0]}" )" &> /dev/null && pwd )
+# Assume the project root is one level above the 'script' directory
+PROJECT_DIR=$(dirname "$SCRIPT_DIR")
+
 NGINX_CONF="/etc/nginx/nginx.conf"
 RTMP_STATS_CONF="/etc/nginx/sites-available/rtmp"
 STATS_SYMLINK="/etc/nginx/sites-enabled/rtmp"
@@ -57,7 +60,7 @@ if [[ $EUID -ne 0 ]]; then
 fi
 
 # --- State Variables ---
-declare -A selected_keys
+declare -A selected_platforms
 declare -A custom_platforms
 publish_rules=""
 setup_stats=false
@@ -96,10 +99,10 @@ for choice in "${choices[@]}"; do
         IFS=';' read -r name type url var <<< "${PLATFORMS[$choice]}"
         read -sp "Enter your stream key for ${name}: " key
         echo
-        selected_keys["$var"]="$key;$type;$url"
+        selected_platforms["$name"]="$key;$type;$url"
     elif [[ "$choice" == "8" ]]; then
         read -p "Enter a name for the custom platform (e.g., MyServer): " custom_name
-        read -p "Enter the full RTMP or RTMPS URL: " custom_url
+        read -p "Enter the full RTMP or RTMPS URL (e.g., rtmp://server/app/): " custom_url
         read -sp "Enter the stream key: " custom_key
         echo
         custom_platforms["$custom_name"]="$custom_url;$custom_key"
@@ -150,8 +153,7 @@ fi
 print_header "\nStep 5: Confirmation"
 echo "The script is ready to perform the following actions:"
 echo "  - Install required system packages (nginx, ffmpeg, etc.)."
-echo "  - Create a .env file at ${ENV_FILE} with your stream keys."
-echo "  - Generate the Nginx configuration."
+echo "  - Generate the Nginx configuration with your stream keys."
 if $setup_stats; then echo "  - Set up the RTMP statistics page."; fi
 if $configure_firewall; then echo "  - Apply firewall rules using UFW."; fi
 echo "  - Reload the Nginx service."
@@ -173,24 +175,7 @@ apt-get upgrade -y > /dev/null 2>&1
 apt-get install -y build-essential libpcre3 libpcre3-dev libssl-dev zlib1g-dev git curl ffmpeg libnginx-mod-rtmp nginx > /dev/null 2>&1
 print_success "Packages installed."
 
-# 2. Create .env file
-print_success "Creating .env file..."
-echo "# This file stores your stream keys and is ignored by git." > "$ENV_FILE"
-echo "# Do not share this file publicly." >> "$ENV_FILE"
-for var_name in "${!selected_keys[@]}"; do
-    IFS=';' read -r key type url <<< "${selected_keys[$var_name]}"
-    echo "$var_name=\"$key\"" >> "$ENV_FILE"
-done
-for name in "${!custom_platforms[@]}"; do
-    IFS=';' read -r url key <<< "${custom_platforms[$name]}"
-    var_name="CUSTOM_${name^^}_URL"
-    key_name="CUSTOM_${name^^}_KEY"
-    echo "$var_name=\"$url\"" >> "$ENV_FILE"
-    echo "$key_name=\"$key\"" >> "$ENV_FILE"
-done
-print_success ".env file created at $ENV_FILE"
-
-# 3. Generate Nginx Config
+# 2. Generate Nginx Config
 print_success "Configuring Nginx..."
 # Backup original config
 if [ ! -f "${NGINX_CONF}.bak" ]; then
@@ -198,39 +183,27 @@ if [ ! -f "${NGINX_CONF}.bak" ]; then
     print_success "Backed up original nginx.conf."
 fi
 
-# Add env variables to the top of nginx.conf
-sed -i '/^events/i \\' "$NGINX_CONF" # Add a newline before events block
-for var_name in "${!selected_keys[@]}"; do
-    sed -i "/^events/i env $var_name;" "$NGINX_CONF"
-done
-for name in "${!custom_platforms[@]}"; do
-    var_name="CUSTOM_${name^^}_URL"
-    key_name="CUSTOM_${name^^}_KEY"
-    sed -i "/^events/i env $var_name;" "$NGINX_CONF"
-    sed -i "/^events/i env $key_name;" "$NGINX_CONF"
-done
-
-# Remove any existing rtmp block
+# Remove any existing rtmp block and env directives from previous runs
+sed -i '/^env .*_STREAM_KEY;$/d' "$NGINX_CONF"
 sed -i '/^rtmp\s*{/,/^\s*}/d' "$NGINX_CONF"
 
 # Create the new rtmp block
-rtmp_block="\nrtmp {\n\tserver {\n\t\tlisten 1935;\n\t\tchunk_size 4096;\n\n\t\t# Ingest Security\n\t\t$publish_rules\n\n\t\tapplication live {\n\t\t\tlive on;\n\t\t\trecord off;\n"
+rtmp_block="\nrtmp {\n\tserver {\n\t\tlisten 1935;\n\t\tchunk_size 4096;\n\n\t\t# Ingest Security\n\t\t$publish_rules\n\n\t\tapplication live {\n\t\t\tlive on;\n\t\t\trecord off;\n\n\t\t\t# WARNING: Stream keys are stored in plain text below."
 
 # Add push directives
-for var_name in "${!selected_keys[@]}"; do
-    IFS=';' read -r key type url <<< "${selected_keys[$var_name]}"
+for name in "${!selected_platforms[@]}"; do
+    IFS=';' read -r key type url <<< "${selected_platforms[$name]}"
     if [[ "$type" == "RTMP" ]]; then
-        rtmp_block+="\n\t\t\t# Push to ${var_name%%_*}\n\t\t\tpush ${url}\$$var_name;"
+        rtmp_block+="\n\t\t\t# Push to ${name}\n\t\t\tpush ${url}${key};"
     elif [[ "$type" == "RTMPS" ]]; then
-        rtmp_block+="\n\t\t\t# Push to ${var_name%%_*}\n\t\t\texec_push /usr/bin/ffmpeg -re -i \"rtmp://127.0.0.1/live/\$name\" -c copy -f flv \"${url}\$$var_name\";"
+        rtmp_block+="\n\t\t\t# Push to ${name}\n\t\t\texec_push /usr/bin/ffmpeg -re -i \"rtmp://127.0.0.1/live/\$name\" -c copy -f flv \"${url}${key}\";"
     fi
 done
 
 # Add custom push directives
 for name in "${!custom_platforms[@]}"; do
-    url_var="CUSTOM_${name^^}_URL"
-    key_var="CUSTOM_${name^^}_KEY"
-    rtmp_block+="\n\t\t\t# Push to ${name}\n\t\t\texec_push /usr/bin/ffmpeg -re -i \"rtmp://127.0.0.1/live/\$name\" -c copy -f flv \"\$$url_var/\$$key_var\";"
+    IFS=';' read -r url key <<< "${custom_platforms[$name]}"
+    rtmp_block+="\n\t\t\t# Push to ${name}\n\t\t\texec_push /usr/bin/ffmpeg -re -i \"rtmp://127.0.0.1/live/\$name\" -c copy -f flv \"${url}${key}\";"
 done
 
 rtmp_block+="\n\t\t}\n\t}\n}"
@@ -239,7 +212,7 @@ rtmp_block+="\n\t\t}\n\t}\n}"
 echo -e "$rtmp_block" >> "$NGINX_CONF"
 print_success "Nginx RTMP configuration generated."
 
-# 4. Setup Stats Page
+# 3. Setup Stats Page
 if $setup_stats; then
     print_success "Setting up RTMP stats page..."
     stats_config="server {\n\tlisten 8080;\n\tserver_name _;\n\n\tlocation /stat {\n\t\trtmp_stat all;\n\t\trtmp_stat_stylesheet stat.xsl;\n\t}\n\tlocation /stat.xsl {\n\t\troot ${STATS_XSL_DIR};\n\t}\n\tlocation /control {\n\t\trtmp_control all;\n\t}\n}"
@@ -254,7 +227,7 @@ if $setup_stats; then
     print_success "Stats page configured."
 fi
 
-# 5. Configure Firewall
+# 4. Configure Firewall
 if $configure_firewall; then
     print_success "Configuring firewall (UFW)..."
     ufw allow 22/tcp > /dev/null
@@ -266,7 +239,7 @@ if $configure_firewall; then
     print_success "Firewall rules applied."
 fi
 
-# 6. Validate and Reload
+# 5. Validate and Reload
 print_success "Validating Nginx configuration..."
 nginx_test=$(nginx -t 2>&1)
 if [[ "$nginx_test" =~ "successful" ]]; then
