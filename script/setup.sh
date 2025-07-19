@@ -101,13 +101,13 @@ for choice in "${choices[@]}"; do
     choice=$(echo "$choice" | xargs) # Trim whitespace
     if [[ -v PLATFORMS[$choice] ]]; then
         IFS=';' read -r name type url var <<< "${PLATFORMS[$choice]}"
-        read -sp "Enter your stream key for ${name}: " key
+        read -p "Enter your stream key for ${name}: " key
         echo
         selected_platforms["$name"]="$key;$type;$url"
     elif [[ "$choice" == "8" ]]; then
         read -p "Enter a name for the custom platform (e.g., MyServer): " custom_name
         read -p "Enter the full RTMP or RTMPS URL (e.g., rtmp://server/app/): " custom_url
-        read -sp "Enter the stream key: " custom_key
+        read -p "Enter the stream key: " custom_key
         echo
         custom_platforms["$custom_name"]="$custom_url;$custom_key"
     fi
@@ -141,17 +141,20 @@ esac
 
 # --- Optional Features ---
 print_header "\nStep 3: Optional Features"
-read -p "Set up the web-based statistics page on port 8080? (y/n): " stats_choice
+read -p "Set up the web-based statistics page on port 8080? (Y/n): " stats_choice
+stats_choice=${stats_choice:-y} # Default to 'y' if empty
 if [[ "$stats_choice" == "y" ]]; then
     setup_stats=true
 fi
 
 # --- Firewall ---
 print_header "\nStep 4: Firewall Configuration"
-read -p "Allow the script to configure UFW (firewall)? This will open ports 22, 80, 443, 1935, and 8080 (if stats enabled). (y/n): " firewall_choice
+read -p "Allow the script to configure UFW (firewall)? This will open ports 22, 80, 443, 1935, and 8080 (if stats enabled). (Y/n): " firewall_choice
+firewall_choice=${firewall_choice:-y} # Default to 'y' if empty
 if [[ "$firewall_choice" == "y" ]]; then
     configure_firewall=true
 fi
+
 
 # --- Confirmation ---
 print_header "\nStep 5: Confirmation"
@@ -206,6 +209,20 @@ if [ ! -f "${NGINX_CONF}.bak" ]; then
     print_success "Backed up original nginx.conf."
 fi
 
+# Check for existing RTMP block
+if grep -q -E "^\s*rtmp\s*\{" "$NGINX_CONF"; then
+    print_warning "Existing RTMP configuration found!"
+    echo "--- Current Configuration ---"
+    # Use awk to print the whole rtmp block
+    awk '/^\s*rtmp\s*\{/,/^\s*\}\s*$/' "$NGINX_CONF"
+    echo "-----------------------------"
+    read -p "Do you want to delete this configuration and create a new one? (y/n): " delete_confirm
+    if [[ "$delete_confirm" != "y" ]]; then
+        print_error "Aborted by user. No changes were made."
+        exit 0
+    fi
+    print_success "Deleting old configuration..."
+fi
 
 # Remove any existing rtmp block and env directives from previous runs
 sed -i '/^env .*_STREAM_KEY;$/d' "$NGINX_CONF"
@@ -234,3 +251,64 @@ for name in "${!custom_platforms[@]}"; do
         # Use exec_push for RTMPS or other protocols
         rtmp_block+="\n\t\t\t# Push to ${name}\n\t\t\texec_push /usr/bin/ffmpeg -re -i \"rtmp://127.0.0.1/live/\$name\" -c copy -f flv \"${url}${key}\";"
     fi
+done
+
+rtmp_block+="\n\t\t}\n\t}\n}"
+
+# Append the block to nginx.conf
+echo -e "$rtmp_block" >> "$NGINX_CONF"
+print_success "Nginx RTMP configuration generated."
+
+# Rename steps to keep numbering correct
+# 4. Setup Stats Page
+if $setup_stats; then
+    print_success "Setting up RTMP stats page..."
+    stats_config="server {\n\tlisten 8080;\n\tserver_name _;\n\n\tlocation /stat {\n\t\trtmp_stat all;\n\t\trtmp_stat_stylesheet stat.xsl;\n\t\t# Add CORS header to allow web dashboard access\n\t\tadd_header 'Access-Control-Allow-Origin' '*' always;\n\t}\n\tlocation /stat.xsl {\n\t\troot ${STATS_XSL_DIR};\n\t}\n\tlocation /control {\n\t\trtmp_control all;\n\t}\n}"
+    echo -e "$stats_config" > "$RTMP_STATS_CONF"
+    
+    if [ ! -L "$STATS_SYMLINK" ]; then
+        ln -s "$RTMP_STATS_CONF" "$STATS_SYMLINK"
+    fi
+
+    mkdir -p "$STATS_XSL_DIR"
+    curl -s -o "$STATS_XSL_FILE" https://raw.githubusercontent.com/arut/nginx-rtmp-module/master/stat.xsl
+    print_success "Stats page configured."
+fi
+
+# 5. Configure Firewall
+if $configure_firewall; then
+    print_success "Configuring firewall (UFW)..."
+    ufw allow 22/tcp > /dev/null
+    ufw allow 80/tcp > /dev/null
+    ufw allow 443/tcp > /dev/null
+    ufw allow 1935/tcp > /dev/null
+    if $setup_stats; then ufw allow 8080/tcp > /dev/null; fi
+    yes | ufw enable > /dev/null
+    print_success "Firewall rules applied."
+fi
+
+# 6. Validate and Reload
+print_success "Validating Nginx configuration..."
+nginx_test=$(nginx -t 2>&1)
+if [[ "$nginx_test" =~ "successful" ]]; then
+    print_success "Configuration is valid. Reloading Nginx..."
+    systemctl reload nginx
+    print_success "Nginx reloaded successfully."
+else
+    print_error "Nginx configuration test failed:"
+    echo "$nginx_test"
+    print_error "Restoring backup configuration. Please review the errors."
+    cp "${NGINX_CONF}.bak" "$NGINX_CONF"
+    exit 1
+fi
+
+print_header "\n--- Setup Complete! ---"
+echo -e "Your restreaming server is now configured."
+echo -e "You can stream to:"
+echo -e "  - From the internet: ${C_BOLD}rtmp://${PUBLIC_IP}/live${C_RESET}"
+echo -e "  - From your local network: ${C_BOLD}rtmp://${LOCAL_IP}/live${C_RESET}"
+echo -e "Use any stream key you like for the ingest."
+if $setup_stats; then
+    echo -e "View stats at: ${C_BOLD}http://${PUBLIC_IP}:8080/stat${C_RESET} or ${C_BOLD}http://${LOCAL_IP}:8080/stat${C_RESET}"
+fi
+echo -e "To add or remove platforms, simply run this script again."
