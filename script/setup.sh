@@ -218,8 +218,15 @@ done
 # Add custom push directives
 for name in "${!custom_platforms[@]}"; do
     IFS=';' read -r url key <<< "${custom_platforms[$name]}"
-    rtmp_block+="\n\t\t\t# Push to ${name}\n\t\t\texec_push /usr/bin/ffmpeg -re -i \"rtmp://127.0.0.1/live/\$name\" -c copy -f flv \"${url}${key}\";"
+    if [[ "$url" == rtmp://* ]]; then
+        # Use push for standard RTMP
+        rtmp_block+="\n\t\t\t# Push to ${name}\n\t\t\tpush ${url}${key};"
+    else
+        # Use exec_push for RTMPS or other protocols
+        rtmp_block+="\n\t\t\t# Push to ${name}\n\t\t\texec_push /usr/bin/ffmpeg -re -i \"rtmp://127.0.0.1/live/\$name\" -c copy -f flv \"${url}${key}\";"
+    fi
 done
+
 
 rtmp_block+="\n\t\t}\n\t}\n}"
 
