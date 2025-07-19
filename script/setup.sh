@@ -172,14 +172,23 @@ fi
 # --- EXECUTION ---
 print_header "\n--- Starting Setup ---"
 
-# 1. Detect IP Address
-print_success "Detecting server's public IP address..."
-SERVER_IP=$(curl -s icanhazip.com)
-if [ -z "$SERVER_IP" ]; then
-    SERVER_IP="<your_server_ip>"
-    print_warning "Could not automatically detect server IP. Please find it manually."
+# 1. Detect IP Addresses
+print_success "Detecting server IP addresses..."
+PUBLIC_IP=$(curl -s icanhazip.com)
+LOCAL_IP=$(hostname -I | awk '{print $1}')
+
+if [ -z "$PUBLIC_IP" ]; then
+    PUBLIC_IP="<your_public_ip>"
+    print_warning "Could not automatically detect public IP. Please find it manually."
 else
-    print_success "Server IP detected: $SERVER_IP"
+    print_success "Public IP detected: $PUBLIC_IP"
+fi
+
+if [ -z "$LOCAL_IP" ]; then
+    LOCAL_IP="<your_local_ip>"
+    print_warning "Could not automatically detect local IP."
+else
+    print_success "Local IP detected: $LOCAL_IP"
 fi
 
 # 2. Install Dependencies
@@ -279,9 +288,11 @@ fi
 
 print_header "\n--- Setup Complete! ---"
 echo -e "Your restreaming server is now configured."
-echo -e "You can stream to: ${C_BOLD}rtmp://${SERVER_IP}/live${C_RESET}"
+echo -e "You can stream to:"
+echo -e "  - From the internet: ${C_BOLD}rtmp://${PUBLIC_IP}/live${C_RESET}"
+echo -e "  - From your local network: ${C_BOLD}rtmp://${LOCAL_IP}/live${C_RESET}"
 echo -e "Use any stream key you like for the ingest."
 if $setup_stats; then
-    echo -e "View stats at: ${C_BOLD}http://${SERVER_IP}:8080/stat${C_RESET}"
+    echo -e "View stats at: ${C_BOLD}http://${PUBLIC_IP}:8080/stat${C_RESET} or ${C_BOLD}http://${LOCAL_IP}:8080/stat${C_RESET}"
 fi
 echo -e "To add or remove platforms, simply run this script again."
