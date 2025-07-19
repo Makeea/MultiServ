@@ -227,72 +227,10 @@ done
 # Add custom push directives
 for name in "${!custom_platforms[@]}"; do
     IFS=';' read -r url key <<< "${custom_platforms[$name]}"
-    if [[ "$url" == rtmp://* ]]; then
+    if [[ "$url" == rtmp* ]]; then
         # Use push for standard RTMP
         rtmp_block+="\n\t\t\t# Push to ${name}\n\t\t\tpush ${url}${key};"
     else
         # Use exec_push for RTMPS or other protocols
         rtmp_block+="\n\t\t\t# Push to ${name}\n\t\t\texec_push /usr/bin/ffmpeg -re -i \"rtmp://127.0.0.1/live/\$name\" -c copy -f flv \"${url}${key}\";"
     fi
-done
-
-
-rtmp_block+="\n\t\t}\n\t}\n}"
-
-# Append the block to nginx.conf
-echo -e "$rtmp_block" >> "$NGINX_CONF"
-print_success "Nginx RTMP configuration generated."
-
-# Rename steps to keep numbering correct
-# 4. Setup Stats Page
-if $setup_stats; then
-    print_success "Setting up RTMP stats page..."
-    stats_config="server {\n\tlisten 8080;\n\tserver_name _;\n\n\tlocation /stat {\n\t\trtmp_stat all;\n\t\trtmp_stat_stylesheet stat.xsl;\n\t}\n\tlocation /stat.xsl {\n\t\troot ${STATS_XSL_DIR};\n\t}\n\tlocation /control {\n\t\trtmp_control all;\n\t}\n}"
-    echo -e "$stats_config" > "$RTMP_STATS_CONF"
-    
-    if [ ! -L "$STATS_SYMLINK" ]; then
-        ln -s "$RTMP_STATS_CONF" "$STATS_SYMLINK"
-    fi
-
-    mkdir -p "$STATS_XSL_DIR"
-    curl -s -o "$STATS_XSL_FILE" https://raw.githubusercontent.com/arut/nginx-rtmp-module/master/stat.xsl
-    print_success "Stats page configured."
-fi
-
-# 5. Configure Firewall
-if $configure_firewall; then
-    print_success "Configuring firewall (UFW)..."
-    ufw allow 22/tcp > /dev/null
-    ufw allow 80/tcp > /dev/null
-    ufw allow 443/tcp > /dev/null
-    ufw allow 1935/tcp > /dev/null
-    if $setup_stats; then ufw allow 8080/tcp > /dev/null; fi
-    yes | ufw enable > /dev/null
-    print_success "Firewall rules applied."
-fi
-
-# 6. Validate and Reload
-print_success "Validating Nginx configuration..."
-nginx_test=$(nginx -t 2>&1)
-if [[ "$nginx_test" =~ "successful" ]]; then
-    print_success "Configuration is valid. Reloading Nginx..."
-    systemctl reload nginx
-    print_success "Nginx reloaded successfully."
-else
-    print_error "Nginx configuration test failed:"
-    echo "$nginx_test"
-    print_error "Restoring backup configuration. Please review the errors."
-    cp "${NGINX_CONF}.bak" "$NGINX_CONF"
-    exit 1
-fi
-
-print_header "\n--- Setup Complete! ---"
-echo -e "Your restreaming server is now configured."
-echo -e "You can stream to:"
-echo -e "  - From the internet: ${C_BOLD}rtmp://${PUBLIC_IP}/live${C_RESET}"
-echo -e "  - From your local network: ${C_BOLD}rtmp://${LOCAL_IP}/live${C_RESET}"
-echo -e "Use any stream key you like for the ingest."
-if $setup_stats; then
-    echo -e "View stats at: ${C_BOLD}http://${PUBLIC_IP}:8080/stat${C_RESET} or ${C_BOLD}http://${LOCAL_IP}:8080/stat${C_RESET}"
-fi
-echo -e "To add or remove platforms, simply run this script again."

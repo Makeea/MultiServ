@@ -225,11 +225,14 @@
 
 	async function fetchStats() {
 		try {
-			let res = await fetch('http://localhost:8080/stat');
-			if (!res.ok) throw new Error('Fetch failed');
+			// Dynamically construct the stats URL from the current page's hostname
+			const statsUrl = `${window.location.protocol}//${window.location.hostname}:8080/stat`;
+			let res = await fetch(statsUrl);
+			if (!res.ok) throw new Error(`Fetch failed with status ${res.status}`);
 			let xml = await res.text();
 			parseStats(xml);
 		} catch (e) {
+			console.error("Error fetching stats:", e);
 			displayStatus('DOWN');
 			setServerStatus(false);
 		}
