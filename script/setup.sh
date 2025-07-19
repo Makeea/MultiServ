@@ -76,13 +76,17 @@ print_header "Step 1: Select Streaming Platforms"
 echo "Default selection is Twitch and YouTube."
 echo
 
-for i in "${!PLATFORMS[@]}"; do
+# Sort keys numerically to ensure consistent order
+mapfile -t sorted_keys < <(printf "%s\n" "${!PLATFORMS[@]}" | sort -n)
+
+for i in "${sorted_keys[@]}"; do
     IFS=';' read -r name type url var <<< "${PLATFORMS[$i]}"
     echo "  [$i] $name ($type)"
 done
 echo "  [8] Custom Platform (Enter your own)"
 echo "  [9] Skip/Finish Selection"
 echo
+
 
 read -p "Enter the numbers for the platforms you want, separated by commas (e.g., 1,2,3): " platform_choices
 
@@ -168,20 +172,31 @@ fi
 # --- EXECUTION ---
 print_header "\n--- Starting Setup ---"
 
-# 1. Install Dependencies
+# 1. Detect IP Address
+print_success "Detecting server's public IP address..."
+SERVER_IP=$(curl -s icanhazip.com)
+if [ -z "$SERVER_IP" ]; then
+    SERVER_IP="<your_server_ip>"
+    print_warning "Could not automatically detect server IP. Please find it manually."
+else
+    print_success "Server IP detected: $SERVER_IP"
+fi
+
+# 2. Install Dependencies
 print_success "Updating system and installing packages..."
 apt-get update > /dev/null 2>&1
 apt-get upgrade -y > /dev/null 2>&1
 apt-get install -y build-essential libpcre3 libpcre3-dev libssl-dev zlib1g-dev git curl ffmpeg libnginx-mod-rtmp nginx > /dev/null 2>&1
 print_success "Packages installed."
 
-# 2. Generate Nginx Config
+# 3. Generate Nginx Config
 print_success "Configuring Nginx..."
 # Backup original config
 if [ ! -f "${NGINX_CONF}.bak" ]; then
     cp "$NGINX_CONF" "${NGINX_CONF}.bak"
     print_success "Backed up original nginx.conf."
 fi
+
 
 # Remove any existing rtmp block and env directives from previous runs
 sed -i '/^env .*_STREAM_KEY;$/d' "$NGINX_CONF"
@@ -212,7 +227,8 @@ rtmp_block+="\n\t\t}\n\t}\n}"
 echo -e "$rtmp_block" >> "$NGINX_CONF"
 print_success "Nginx RTMP configuration generated."
 
-# 3. Setup Stats Page
+# Rename steps to keep numbering correct
+# 4. Setup Stats Page
 if $setup_stats; then
     print_success "Setting up RTMP stats page..."
     stats_config="server {\n\tlisten 8080;\n\tserver_name _;\n\n\tlocation /stat {\n\t\trtmp_stat all;\n\t\trtmp_stat_stylesheet stat.xsl;\n\t}\n\tlocation /stat.xsl {\n\t\troot ${STATS_XSL_DIR};\n\t}\n\tlocation /control {\n\t\trtmp_control all;\n\t}\n}"
@@ -227,7 +243,7 @@ if $setup_stats; then
     print_success "Stats page configured."
 fi
 
-# 4. Configure Firewall
+# 5. Configure Firewall
 if $configure_firewall; then
     print_success "Configuring firewall (UFW)..."
     ufw allow 22/tcp > /dev/null
@@ -239,7 +255,7 @@ if $configure_firewall; then
     print_success "Firewall rules applied."
 fi
 
-# 5. Validate and Reload
+# 6. Validate and Reload
 print_success "Validating Nginx configuration..."
 nginx_test=$(nginx -t 2>&1)
 if [[ "$nginx_test" =~ "successful" ]]; then
@@ -255,10 +271,10 @@ else
 fi
 
 print_header "\n--- Setup Complete! ---"
-echo "Your restreaming server is now configured."
-echo "You can stream to: ${C_BOLD}rtmp://<your_server_ip>/live${C_RESET}"
-echo "Use any stream key you like for the ingest."
+echo -e "Your restreaming server is now configured."
+echo -e "You can stream to: ${C_BOLD}rtmp://${SERVER_IP}/live${C_RESET}"
+echo -e "Use any stream key you like for the ingest."
 if $setup_stats; then
-    echo "View stats at: ${C_BOLD}http://<your_server_ip>:8080/stat${C_RESET}"
+    echo -e "View stats at: ${C_BOLD}http://${SERVER_IP}:8080/stat${C_RESET}"
 fi
-echo "To add or remove platforms, simply run this script again."
+echo -e "To add or remove platforms, simply run this script again."
